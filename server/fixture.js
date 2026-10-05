@@ -120,6 +120,9 @@ export function fixtureFetch(url) {
     return json({ items: [{ articles: FIXTURE_POPULAR.map((t, i) => ({ article: t.replaceAll(' ', '_'), rank: i + 1 })) }] });
   }
   const p = u.searchParams;
+  if (p.get('list') === 'mostviewed') {
+    return json({ query: { mostviewed: FIXTURE_POPULAR.map((title) => ({ ns: 0, title, count: 1000 })) } });
+  }
   if (p.get('generator') === 'random') {
     const n = Number(p.get('grnlimit') || 1);
     const eligible = FIXTURE_PAGES.filter((pg) => pg._randomEligible);

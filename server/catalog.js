@@ -1,69 +1,85 @@
-// The catalog decides which article ends up on each card. Three sources:
-//   random  - Wikipedia's random article generator (pre-fetched into a pool)
-//   popular - a top-viewed article from a random month of the last five years
-//   set     - a member of one of the themed albums
-// Every source falls back to the next one, and ultimately to articles already
-// in the catalog, so a Wikipedia hiccup never breaks pack opening.
+// The catalog turns a rolled rarity into an actual Wikipedia article.
+//
+// Packs roll each card's rarity first (with the published odds from config),
+// then ask the catalog for an article of that rarity:
+//   1. a fresh article from the pre-fetched pool (never dealt before), else
+//   2. any known article of that rarity (cards are shared, duplicates exist).
+// The pool is fed in the background by Wikipedia's random generator (mostly
+// low tiers) and by top-viewed lists (high tiers). If Wikipedia is slow or
+// down, a circuit breaker keeps everything running from the local catalog.
 
 import { config } from './config.js';
 import { setsFor } from './sets.js';
 import { GameError } from './errors.js';
+import { RARITIES, RARITY_RANK } from './rarity.js';
 
 const DAY = 24 * 60 * 60 * 1000;
-const BACKOFF_MS = 30 * 1000;
+const BACKOFF_MS = 60 * 1000;
+const MIN_PER_TIER = 12; // keep at least this many known articles per rarity
 
-export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.random }) {
+export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.random, log = console }) {
   const sets = setsFor(lang);
   let refilling = null;
-  // Circuit breaker: after a network failure, skip Wikipedia for a while so
-  // packs open instantly from the existing catalog instead of piling up timeouts.
+  let enriching = null;
   let downUntil = 0;
+
   const wikiDown = () => Date.now() < downUntil;
   const markDown = (err) => {
-    downUntil = Date.now() + BACKOFF_MS;
-    console.warn('[catalog] Wikipedia unavailable, using cached catalog for a while:', err.message);
+    downUntil = Date.now() + Math.max(BACKOFF_MS, err?.retryAfterMs || 0);
+    log.warn?.(`[catalog] Wikipedia unavailable (${err?.message}); serving from the local catalog for a while`);
   };
 
   const stmt = {
     upsert: db.prepare(`
-      INSERT INTO articles (id, title, description, extract, image, url, views, bytes, score, rarity, discovered_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO articles (id, title, description, extract, image, url, views, bytes, refs, images, sections, badge,
+                            rarity, atk, def, score, discovered_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title, description = excluded.description, extract = excluded.extract,
         image = excluded.image, url = excluded.url`),
     get: db.prepare('SELECT * FROM articles WHERE id = ?'),
     poolCount: db.prepare('SELECT COUNT(*) AS n FROM pool'),
-    poolAdd: db.prepare('INSERT OR IGNORE INTO pool (article_id) VALUES (?)'),
-    poolTake: db.prepare('DELETE FROM pool WHERE article_id = (SELECT article_id FROM pool ORDER BY random() LIMIT 1) RETURNING article_id'),
-    anyArticle: db.prepare('SELECT * FROM articles ORDER BY random() LIMIT 1'),
-    popularGet: db.prepare('SELECT titles, fetched_at FROM popular_cache WHERE month = ?'),
+    poolAdd: db.prepare('INSERT OR IGNORE INTO pool (article_id, rarity) VALUES (?, ?)'),
+    poolTake: db.prepare(`DELETE FROM pool WHERE article_id = (
+      SELECT article_id FROM pool WHERE rarity = ? ORDER BY random() LIMIT 1) RETURNING article_id`),
+    anyOfRarity: db.prepare('SELECT * FROM articles WHERE rarity = ? ORDER BY random() LIMIT 1'),
+    tierCounts: db.prepare('SELECT rarity, COUNT(*) AS n FROM articles GROUP BY rarity'),
+    popularGet: db.prepare('SELECT titles FROM popular_cache WHERE month = ?'),
     popularPut: db.prepare('INSERT OR REPLACE INTO popular_cache (month, titles, fetched_at) VALUES (?, ?, ?)'),
     byTitle: db.prepare('SELECT * FROM articles WHERE title = ?'),
     memberGet: db.prepare('SELECT article_id FROM set_members WHERE set_id = ? AND title = ?'),
     memberPut: db.prepare('INSERT OR REPLACE INTO set_members (set_id, title, article_id) VALUES (?, ?, ?)'),
   };
 
-  // Rarity/score are frozen at first discovery: the upsert never touches them.
-  function save(article) {
+  // Stats are frozen at first discovery: the upsert never touches them.
+  function save(a) {
     stmt.upsert.run(
-      article.id, article.title, article.description, article.extract, article.image, article.url,
-      article.views, article.bytes, article.score, article.rarity, now(),
+      a.id, a.title, a.description, a.extract, a.image, a.url, a.views, a.bytes,
+      a.refs ?? 0, a.images ?? 0, a.sections ?? 0, a.badge ?? null,
+      a.rarity, a.atk, a.def, a.score, now(),
     );
-    return stmt.get.get(article.id);
+    return stmt.get.get(a.id);
   }
+
+  function addToPool(article) {
+    const saved = save(article);
+    stmt.poolAdd.run(saved.id, saved.rarity);
+    return saved;
+  }
+
+  // --- background feeding ---------------------------------------------------
 
   async function refillPool() {
     if (refilling) return refilling;
+    if (wikiDown()) return;
     refilling = (async () => {
       try {
         let guard = 0;
-        while (stmt.poolCount.get().n < config.pool.target && guard++ < 6) {
-          const batch = await wiki.random(config.pool.batch);
-          for (const a of batch) {
-            save(a);
-            stmt.poolAdd.run(a.id);
-          }
+        while (stmt.poolCount.get().n < config.pool.target && guard++ < 5) {
+          for (const a of await wiki.random(config.pool.batch)) addToPool(a);
         }
+      } catch (err) {
+        markDown(err);
       } finally {
         refilling = null;
       }
@@ -71,54 +87,99 @@ export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.ra
     return refilling;
   }
 
-  async function drawRandom() {
-    const available = stmt.poolCount.get().n;
-    if (available === 0) {
-      if (wikiDown()) return null;
-      await refillPool();
-    } else if (available < config.pool.lowWater && !wikiDown()) {
-      refillPool().catch(markDown);
-    }
-    const row = stmt.poolTake.get();
-    return row ? stmt.get.get(row.article_id) : null;
-  }
-
   async function popularTitles() {
-    // Random month in the last 60 full months.
     const d = new Date(now());
     d.setUTCDate(1);
     d.setUTCMonth(d.getUTCMonth() - 1 - Math.floor(random() * 60));
     const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
     const cached = stmt.popularGet.get(key);
     if (cached) return JSON.parse(cached.titles);
-    const titles = await wiki.topOfMonth(d.getUTCFullYear(), d.getUTCMonth() + 1);
+    let titles;
+    try {
+      titles = await wiki.topOfMonth(d.getUTCFullYear(), d.getUTCMonth() + 1);
+    } catch {
+      titles = await wiki.mostViewed();
+    }
     stmt.popularPut.run(key, JSON.stringify(titles), now());
     return titles;
   }
 
-  async function fetchByTitle(title) {
-    const known = stmt.byTitle.get(title);
-    if (known && now() - known.discovered_at < 30 * DAY) return known;
-    const found = await wiki.byTitles([title]);
-    const article = found.get(title);
-    if (article) return save(article);
-    return known || null;
+  // Pull popular articles into the catalog until every high tier has enough
+  // cards. Background calls are throttled; `force` is used when a draw found
+  // nothing at all for a tier.
+  let lastEnrich = 0;
+  async function enrich({ force = false } = {}) {
+    if (enriching) return enriching;
+    if (wikiDown() || (!force && Date.now() - lastEnrich < 5 * 60_000)) return;
+    lastEnrich = Date.now();
+    enriching = (async () => {
+      try {
+        for (let round = 0; round < 3 && thinTiers().length; round++) {
+          const titles = await popularTitles();
+          const pick = [];
+          for (let i = 0; i < 10 && titles.length; i++) pick.push(titles[Math.floor(random() * Math.min(titles.length, 1000))]);
+          const found = await wiki.byTitles([...new Set(pick)]);
+          for (const a of found.values()) addToPool(a);
+        }
+      } catch (err) {
+        markDown(err);
+      } finally {
+        enriching = null;
+      }
+    })();
+    return enriching;
   }
 
-  async function drawPopular() {
-    const titles = await popularTitles();
-    // Top lists contain non-articles and disambiguations; try a few picks.
-    for (let i = 0; i < 4 && titles.length; i++) {
-      const title = titles[Math.floor(random() * Math.min(titles.length, 500))];
-      const article = await fetchByTitle(title);
-      if (article) return article;
-    }
-    return null;
+  function thinTiers() {
+    const counts = Object.fromEntries(stmt.tierCounts.all().map((r) => [r.rarity, r.n]));
+    return RARITIES.filter((r) => (counts[r.id] || 0) < MIN_PER_TIER).map((r) => r.id);
   }
+
+  async function warmUp() {
+    await refillPool();
+    await resolveAllSets().catch(markDown);
+    await enrich({ force: true });
+  }
+
+  // --- dealing --------------------------------------------------------------
+
+  function takeFresh(rarity) {
+    const row = stmt.poolTake.get(rarity);
+    return row ? stmt.get.get(row.article_id) : null;
+  }
+
+  // Returns an article of exactly `rarity` when possible; walks down (then up)
+  // the tiers only if the catalog has nothing at all for that rarity.
+  async function drawOfRarity(rarity) {
+    let article = takeFresh(rarity) || stmt.anyOfRarity.get(rarity);
+    if (!article && !wikiDown()) {
+      await (RARITY_RANK[rarity] >= RARITY_RANK.SR ? enrich({ force: true }) : refillPool());
+      article = takeFresh(rarity) || stmt.anyOfRarity.get(rarity);
+    }
+    if (stmt.poolCount.get().n < config.pool.lowWater) refillPool();
+    if (thinTiers().length) enrich();
+    if (article) return article;
+
+    const rank = RARITY_RANK[rarity];
+    const order = RARITIES.map((r, i) => ({ id: r.id, d: Math.abs(i - rank) + (i > rank ? 0.5 : 0) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(1);
+    for (const { id } of order) {
+      const alt = takeFresh(id) || stmt.anyOfRarity.get(id);
+      if (alt) {
+        log.warn?.(`[catalog] no ${rarity} card available, dealt ${id} instead`);
+        return alt;
+      }
+    }
+    throw new GameError('Wikipedia is unreachable and the catalog is empty. Try again shortly.', 503);
+  }
+
+  // --- sets -----------------------------------------------------------------
 
   async function resolveSetMember(setId, title) {
     const row = stmt.memberGet.get(setId, title);
     if (row?.article_id) return stmt.get.get(row.article_id);
+    if (wikiDown()) return null;
     const found = await wiki.byTitles([title]);
     const article = found.get(title);
     if (!article) return null;
@@ -127,42 +188,24 @@ export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.ra
     return saved;
   }
 
-  async function drawSet() {
-    if (!sets.length) return null;
-    const set = sets[Math.floor(random() * sets.length)];
-    const title = set.titles[Math.floor(random() * set.titles.length)];
-    return resolveSetMember(set.id, title);
-  }
-
-  const sources = { random: drawRandom, popular: drawPopular, set: drawSet };
-
-  function pickSource(odds) {
-    let r = random();
-    for (const [name, p] of Object.entries(odds)) {
-      if ((r -= p) < 0) return name;
-    }
-    return 'random';
-  }
-
-  async function drawCard(odds) {
-    const first = pickSource(odds);
-    const order = [first, ...['random', 'popular', 'set'].filter((s) => s !== first)];
-    for (const source of order) {
-      if (wikiDown() && source !== 'random') break;
+  async function drawFromSet(setId) {
+    const set = sets.find((s) => s.id === setId);
+    if (!set) throw new GameError('Unknown theme', 404);
+    for (let i = 0; i < 4; i++) {
+      const title = set.titles[Math.floor(random() * set.titles.length)];
       try {
-        const article = await sources[source]();
-        if (article) return { article, source };
+        const article = await resolveSetMember(set.id, title);
+        if (article) return article;
       } catch (err) {
         markDown(err);
       }
     }
-    const fallback = stmt.anyArticle.get();
-    if (fallback) return { article: fallback, source: 'catalog' };
-    throw new GameError('Wikipedia is unreachable and the catalog is empty. Try again shortly.', 503);
+    // Fall back to any resolved member.
+    const row = db.prepare('SELECT article_id FROM set_members WHERE set_id = ? AND article_id IS NOT NULL ORDER BY random() LIMIT 1').get(setId);
+    if (row) return stmt.get.get(row.article_id);
+    throw new GameError('This theme is not available right now. Try again shortly.', 503);
   }
 
-  // Resolve all set members up-front (best effort) so album pages can show
-  // what is missing. Unresolved titles are retried on the next call.
   let lastSetResolve = 0;
   async function resolveAllSets() {
     if (wikiDown() || Date.now() - lastSetResolve < 10 * 60 * 1000) return;
@@ -181,5 +224,16 @@ export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.ra
     }
   }
 
-  return { drawCard, refillPool, resolveAllSets, sets, save };
+  // Rarity mix of a set, used to publish theme pack odds.
+  function setOdds(setId) {
+    const rows = db.prepare(`SELECT a.rarity, COUNT(*) AS n FROM set_members sm JOIN articles a ON a.id = sm.article_id
+      WHERE sm.set_id = ? GROUP BY a.rarity`).all(setId);
+    const total = rows.reduce((s, r) => s + r.n, 0);
+    return Object.fromEntries(rows.map((r) => [r.rarity, total ? r.n / total : 0]));
+  }
+
+  return {
+    drawOfRarity, drawFromSet, refillPool, enrich, warmUp, resolveAllSets, setOdds, save, sets,
+    isDown: wikiDown,
+  };
 }

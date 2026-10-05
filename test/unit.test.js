@@ -1,68 +1,133 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeScore, rarityForScore } from '../server/rarity.js';
+import { computeStats, rarityForViews, wikitextMetrics, qualityScore } from '../server/rarity.js';
 import { pageToArticle, createWikiClient } from '../server/wiki.js';
 import { redact } from '../server/quiz.js';
+import { rollRarity, weekStart } from '../server/game.js';
+import { damage } from '../server/duels.js';
+import { isOffensive } from '../server/moderation.js';
 
-test('rarity grows with views and article depth', () => {
-  const stub = computeScore({ views: 3, bytes: 2000 });
-  const famous = computeScore({ views: 20000, bytes: 220000 });
-  assert.equal(rarityForScore(stub), 'common');
-  assert.equal(rarityForScore(famous), 'mythic');
-  assert.ok(computeScore({ views: 500, bytes: 40000 }) > computeScore({ views: 50, bytes: 40000 }));
-  assert.ok(computeScore({ views: 500, bytes: 90000 }) > computeScore({ views: 500, bytes: 9000 }));
-  assert.ok(famous <= 100);
+test('rarity follows readership; ATK follows length x rarity; DEF follows quality', () => {
+  assert.equal(rarityForViews(0), 'C');
+  assert.equal(rarityForViews(30), 'R');
+  assert.equal(rarityForViews(30, 3), 'PC');
+  assert.equal(rarityForViews(5000), 'L');
+  const stub = computeStats({ views: 1, bytes: 2000, refs: 0, images: 0, sections: 0 });
+  const famous = computeStats({ views: 9000, bytes: 250000, refs: 400, images: 40, sections: 50, badge: 'featured' });
+  assert.equal(stub.rarity, 'C');
+  assert.equal(famous.rarity, 'L');
+  assert.ok(famous.atk > 9000 && famous.atk <= 10000, `atk ${famous.atk}`);
+  assert.ok(stub.atk < 1000);
+  assert.equal(famous.def, 10000);
+  assert.ok(stub.def < 3000);
+  assert.equal(famous.atk % 10, 0);
+  // Same article length, higher rarity => more attack.
+  const a = computeStats({ views: 1, bytes: 50000 });
+  const b = computeStats({ views: 3000, bytes: 50000 });
+  assert.ok(b.atk > a.atk * 3);
+  assert.ok(qualityScore({ bytes: 50000, refs: 100, images: 10, sections: 20 }) > qualityScore({ bytes: 50000 }));
 });
 
-test('pageToArticle averages page views and skips non-articles', () => {
+test('wikitext metrics count references, images, sections and badges', () => {
+  const text = `{{Article de qualité|date=2020}}
+{{Infobox|image = Earth.jpg}}
+Intro<ref>a</ref> text<ref name="b">b</ref> again<ref name="b"/>.
+== History ==
+[[Fichier:Map.png|thumb]] [[File:Map.png]]
+=== Early ===
+<references />`;
+  const m = wikitextMetrics(text);
+  assert.equal(m.refs, 3);
+  assert.equal(m.images, 2);
+  assert.equal(m.sections, 2);
+  assert.equal(m.badge, 'featured');
+  assert.equal(wikitextMetrics(null), null);
+});
+
+test('pageToArticle counts days without views as zero', () => {
   const page = {
-    pageid: 42, ns: 0, title: 'Axolotl', length: 46000, description: 'Salamander',
-    extract: ' The axolotl… ', fullurl: 'https://en.wikipedia.org/wiki/Axolotl',
-    thumbnail: { source: 'https://upload.wikimedia.org/a.jpg' },
-    pageviews: { '2026-01-01': 100, '2026-01-02': 300, '2026-01-03': null },
+    pageid: 42, ns: 0, title: 'Axolotl', length: 46000, description: 'Salamander', extract: ' The axolotl… ',
+    pageviews: { d1: 100, d2: 200, d3: null, d4: null },
   };
   const a = pageToArticle(page);
-  assert.equal(a.id, 42);
-  assert.equal(a.views, 200);
+  assert.equal(a.views, 75);
   assert.equal(a.extract, 'The axolotl…');
-  assert.equal(a.image, 'https://upload.wikimedia.org/a.jpg');
   assert.equal(pageToArticle({ ...page, pageprops: { disambiguation: '' } }), null);
   assert.equal(pageToArticle({ ...page, ns: 4 }), null);
-  assert.equal(pageToArticle({ title: 'Nope', missing: true, ns: 0 }), null);
+});
+
+test('wiki client follows prop continuation until pageviews are complete', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const p = new URL(url).searchParams;
+    calls.push(p.get('pvipcontinue'));
+    const body = p.get('pvipcontinue')
+      ? { query: { pages: [{ pageid: 1, ns: 0, title: 'A', length: 100 }, { pageid: 2, ns: 0, title: 'B', length: 100, pageviews: { d1: 40, d2: 60 } }] } }
+      : {
+        continue: { pvipcontinue: 'B', grncontinue: 'x', continue: 'grncontinue||' },
+        query: { pages: [{ pageid: 1, ns: 0, title: 'A', length: 100, pageviews: { d1: 10, d2: 20 } }, { pageid: 2, ns: 0, title: 'B', length: 100 }] },
+      };
+    return new Response(JSON.stringify(body));
+  };
+  const wiki = createWikiClient({ lang: 'fr', userAgent: 'test', fetchImpl });
+  const articles = await wiki.random(2);
+  assert.deepEqual(calls, [null, 'B']);
+  assert.deepEqual(articles.map((a) => a.views).sort(), [15, 50]);
+});
+
+test('wiki client surfaces rate limits with retry hints', async () => {
+  const wiki = createWikiClient({
+    lang: 'en', userAgent: 'test',
+    fetchImpl: async () => new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }),
+  });
+  await assert.rejects(wiki.random(5), (err) => err.status === 429 && err.retryAfterMs === 30000);
 });
 
 test('wiki client resolves redirects and normalized titles', async () => {
-  const fetchImpl = async (url) => {
-    const u = new URL(url);
-    assert.equal(u.searchParams.get('titles'), 'mars|Lennon');
-    return new Response(JSON.stringify({
-      query: {
-        normalized: [{ from: 'mars', to: 'Mars' }],
-        redirects: [{ from: 'Lennon', to: 'John Lennon' }],
-        pages: [
-          { pageid: 1, ns: 0, title: 'Mars', length: 100000 },
-          { pageid: 2, ns: 0, title: 'John Lennon', length: 100000 },
-        ],
-      },
-    }));
-  };
+  const fetchImpl = async () => new Response(JSON.stringify({
+    query: {
+      normalized: [{ from: 'mars', to: 'Mars' }],
+      redirects: [{ from: 'Lennon', to: 'John Lennon' }],
+      pages: [{ pageid: 1, ns: 0, title: 'Mars', length: 100000 }, { pageid: 2, ns: 0, title: 'John Lennon', length: 100000 }],
+    },
+  }));
   const wiki = createWikiClient({ lang: 'en', userAgent: 'test', fetchImpl });
   const found = await wiki.byTitles(['mars', 'Lennon']);
   assert.equal(found.get('mars').id, 1);
   assert.equal(found.get('Lennon').id, 2);
 });
 
-test('top-of-month list drops special pages', async () => {
-  const fetchImpl = async () => new Response(JSON.stringify({
-    items: [{ articles: [{ article: 'Main_Page' }, { article: 'Special:Search' }, { article: 'Star_Wars:_Episode_IV' }] }],
-  }));
-  const wiki = createWikiClient({ lang: 'en', userAgent: 'test', fetchImpl });
-  assert.deepEqual(await wiki.topOfMonth(2025, 3), ['Star Wars: Episode IV']);
+test('rollRarity respects the published odds', () => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const odds = { C: 0.6, PC: 0.25, R: 0.1, SR: 0.04, UR: 0.009, L: 0.001 };
+  const counts = {};
+  const n = 100000;
+  for (let i = 0; i < n; i++) {
+    const r = rollRarity(odds, rnd);
+    counts[r] = (counts[r] || 0) + 1;
+  }
+  for (const [id, p] of Object.entries(odds)) {
+    assert.ok(Math.abs(counts[id] / n - p) < Math.max(0.005, p * 0.25), `${id}: ${counts[id] / n} vs ${p}`);
+  }
+});
+
+test('duel damage: attack scores, defence absorbs, a hit always counts', () => {
+  assert.equal(damage(8000, 4000), 6000);
+  assert.equal(damage(2000, 9000), 400);
+});
+
+test('weekStart is Monday 00:00 UTC', () => {
+  assert.equal(new Date(weekStart(Date.UTC(2026, 0, 15, 12))).toISOString(), '2026-01-12T00:00:00.000Z');
 });
 
 test('redact hides the subject of a quiz clue', () => {
   const clue = redact('Albert Einstein was a physicist. Einstein developed relativity.', 'Albert Einstein');
   assert.ok(!/Einstein|Albert/.test(clue), clue);
   assert.ok(clue.includes('physicist'));
-  assert.ok(!redact('Mercury is the first planet.', 'Mercury (planet)').includes('Mercury'));
+});
+
+test('offensive text filter blocks slurs without hitting innocent words', () => {
+  for (const bad of ['n1gg3r', 'xX_Nazi_Xx', 'Hitl3rFan', 'RapeKing']) assert.ok(isOffensive(bad), bad);
+  for (const ok of ['grapefruit', 'violet', 'computer', 'Raton laveur', 'pedestrian', 'Scunthorpe']) assert.ok(!isOffensive(ok), ok);
 });

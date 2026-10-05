@@ -34,10 +34,14 @@ export function shuffle(arr, random = Math.random) {
 
 // Builds a 4-choice question about `subject`. Decoys have a similar score so
 // the answer isn't obvious from fame alone.
-export function buildQuestion(db, subject, random = Math.random) {
-  const decoys = db.prepare(`
-    SELECT id, title FROM articles WHERE id != ? AND title != ?
-    ORDER BY abs(score - ?) + (abs(random()) % 15) LIMIT 3`).all(subject.id, subject.title, subject.score);
+// `decoyIds` restricts decoys to a given pool (duels use the rest of the deck).
+export function buildQuestion(db, subject, random = Math.random, { decoyIds } = {}) {
+  const decoys = decoyIds
+    ? shuffle(decoyIds.filter((id) => id !== subject.id), random).slice(0, 3)
+      .map((id) => db.prepare('SELECT id, title FROM articles WHERE id = ?').get(id))
+    : db.prepare(`
+      SELECT id, title FROM articles WHERE id != ? AND title != ?
+      ORDER BY abs(score - ?) + (abs(random()) % 15) LIMIT 3`).all(subject.id, subject.title, subject.score);
   if (decoys.length < 3) throw new GameError('Not enough cards discovered yet — open more packs', 409);
   const choices = shuffle([subject, ...decoys], random).map((a) => ({ id: a.id, title: a.title }));
   const extract = subject.extract && subject.extract.length >= MIN_EXTRACT ? subject.extract : subject.description || subject.extract || '';

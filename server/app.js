@@ -19,13 +19,13 @@ import { listNotifications, markRead, achievementsFor } from './notify.js';
 
 const PUBLIC_DIR = fileURLToPath(new URL('../public', import.meta.url));
 
-// Content Security Policy: our own scripts only, images from Wikimedia,
-// fonts from Google Fonts. No inline scripts.
+// Content Security Policy: everything self-hosted except Wikimedia images.
+// No inline scripts.
 const CSP = [
   "default-src 'self'",
   "script-src 'self'",
-  "style-src 'self' https://fonts.googleapis.com",
-  "font-src 'self' https://fonts.gstatic.com",
+  "style-src 'self' 'unsafe-inline'", // inline style attributes only; scripts stay strict
+  "font-src 'self'",
   "img-src 'self' data: https://upload.wikimedia.org",
   "connect-src 'self'",
   "frame-ancestors 'none'",
@@ -75,6 +75,8 @@ export function createApp({
     userAgent: config.userAgent,
     viewScale: config.viewScale,
     fetchImpl: fetchImpl || (wikiSource === 'fixture' ? fixtureFetch : fetch),
+    // No throttling against the in-process fixture.
+    ...(wikiSource === 'fixture' || fetchImpl ? { spacingMs: 0, retryDelayMs: 0 } : {}),
   });
   const catalog = createCatalog({ db, wiki, lang: config.lang, now, random, log });
   const game = createGame({ db, catalog, now, random });
@@ -256,7 +258,8 @@ export function createApp({
   app.use(express.static(PUBLIC_DIR, {
     extensions: ['html'],
     setHeaders(res, path) {
-      if (/\.(css|js|svg|woff2?)$/.test(path)) res.setHeader('Cache-Control', 'public, max-age=300');
+      if (/\.woff2$/.test(path)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      else if (/\.(css|js|svg)$/.test(path)) res.setHeader('Cache-Control', 'public, max-age=300');
     },
   }));
   app.get('/{*splat}', (_req, res) => res.sendFile('index.html', { root: PUBLIC_DIR }));

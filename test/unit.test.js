@@ -69,15 +69,25 @@ test('wiki client follows prop continuation until pageviews are complete', async
       };
     return new Response(JSON.stringify(body));
   };
-  const wiki = createWikiClient({ lang: 'fr', userAgent: 'test', fetchImpl });
+  const wiki = createWikiClient({ lang: 'fr', userAgent: 'test', fetchImpl, spacingMs: 0 });
   const articles = await wiki.random(2);
   assert.deepEqual(calls, [null, 'B']);
   assert.deepEqual(articles.map((a) => a.views).sort(), [15, 50]);
 });
 
-test('wiki client surfaces rate limits with retry hints', async () => {
+test('wiki client retries a short rate limit once, and surfaces long ones', async () => {
+  let calls = 0;
+  const flaky = createWikiClient({
+    lang: 'en', userAgent: 'test', spacingMs: 0, retryDelayMs: 1,
+    fetchImpl: async () => (++calls === 1
+      ? new Response('slow down', { status: 429 })
+      : new Response(JSON.stringify({ query: { pages: [{ pageid: 1, ns: 0, title: 'A', length: 10 }] } }))),
+  });
+  assert.equal((await flaky.random(1)).length, 1);
+  assert.equal(calls, 2);
+
   const wiki = createWikiClient({
-    lang: 'en', userAgent: 'test',
+    lang: 'en', userAgent: 'test', spacingMs: 0,
     fetchImpl: async () => new Response('slow down', { status: 429, headers: { 'retry-after': '30' } }),
   });
   await assert.rejects(wiki.random(5), (err) => err.status === 429 && err.retryAfterMs === 30000);
@@ -91,7 +101,7 @@ test('wiki client resolves redirects and normalized titles', async () => {
       pages: [{ pageid: 1, ns: 0, title: 'Mars', length: 100000 }, { pageid: 2, ns: 0, title: 'John Lennon', length: 100000 }],
     },
   }));
-  const wiki = createWikiClient({ lang: 'en', userAgent: 'test', fetchImpl });
+  const wiki = createWikiClient({ lang: 'en', userAgent: 'test', fetchImpl, spacingMs: 0 });
   const found = await wiki.byTitles(['mars', 'Lennon']);
   assert.equal(found.get('mars').id, 1);
   assert.equal(found.get('Lennon').id, 2);

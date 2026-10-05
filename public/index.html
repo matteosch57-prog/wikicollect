@@ -2,21 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WikiCollect — every Wikipedia article is a card</title>
-  <meta name="description" content="Open packs of Wikipedia articles, complete themed albums, trade duplicates with other players and test your knowledge in quizzes.">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%23f0b429'/><text x='32' y='46' font-size='40' text-anchor='middle' font-family='Georgia,serif' font-weight='700' fill='%231a1204'>W</text></svg>">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>WikiCollect — the encyclopedia, collected</title>
+  <meta name="description" content="Every Wikipedia article is a collectible card. Open packs, complete albums, duel your friends, trade and auction your duplicates.">
+  <meta name="theme-color" content="#f1ede3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#12110e" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="preload" href="/fonts/InstrumentSerif-normal-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/Geist-normal-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/js/main.js"></script>
 </head>
 <body>
-  <div id="offline" class="offline-banner hidden">Offline demo mode — cards come from a small bundled catalog, not live Wikipedia.</div>
-  <header class="topbar">
-    <a href="#/" class="brand"><span class="brand-mark">W</span><span>WikiCollect</span></a>
-    <nav class="nav" id="nav"></nav>
-    <div class="wallet" id="wallet"></div>
+  <div id="offline" class="offline hidden">Offline demo catalogue — cards come from a small bundled set, not live Wikipedia</div>
+  <header class="masthead">
+    <a href="#/" class="wordmark" aria-label="WikiCollect home"><b>wiki</b>collect<sup>Vol. I</sup></a>
+    <nav class="nav" id="nav" aria-label="Main"></nav>
+    <div class="meters" id="meters"></div>
   </header>
-  <main id="view"><div class="spinner"></div></main>
-  <div class="toast-wrap" id="toasts"></div>
-  <script type="module" src="/app.js"></script>
+  <main id="view"><div class="skeleton"></div></main>
+  <footer class="colophon">
+    <span>Card text and images come from Wikipedia and are available under <a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>. WikiCollect is an independent, open-source fan project, not affiliated with the Wikimedia Foundation.</span>
+    <span><a href="https://github.com/matteosch57-prog/wikicollect" target="_blank" rel="noopener">Source code</a> · <a href="#/ranking">Ranking</a></span>
+  </footer>
+  <nav class="tabbar hidden" id="tabbar" aria-label="Quick navigation"></nav>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 </body>
 </html>

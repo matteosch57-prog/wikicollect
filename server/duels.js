@@ -1,7 +1,8 @@
 // Duels: a quiz built from your own cards. Each player brings a deck of 5
-// cards; round N pits your card N against the opponent's card N. Answer the
-// question about your own card within 30 seconds to strike: your ATK scores
-// points and their DEF absorbs part of it. Highest total after 5 rounds wins.
+// cards; round N pits your card N against the opponent's card N. Each round
+// shows the intro of one of your cards with its name blanked out; the choices
+// are cards from your own deck. Name it within 30 seconds to strike: your ATK
+// scores points and their DEF absorbs part of it. Highest total after 5 rounds wins.
 // Rounds are played asynchronously, so nobody has to be online at once.
 
 import { config } from './config.js';
@@ -110,8 +111,9 @@ export function createDuels({ db, game, now = Date.now, random = Math.random }) 
       if (r.served_at) {
         q = JSON.parse(r.choices);
       } else {
+        // Decoys are your other deck cards: you must know which of your cards this is.
         const subject = db.prepare('SELECT * FROM articles WHERE id = ?').get(r.article_id);
-        q = buildQuestion(db, subject, random);
+        q = buildQuestion(db, subject, random, { decoyIds: mine.map((x) => x.article_id) });
         db.prepare('UPDATE duel_rounds SET choices = ?, served_at = ? WHERE duel_id = ? AND user_id = ? AND slot = ?')
           .run(JSON.stringify(q), now(), id, userId, r.slot);
         r.served_at = now();
@@ -127,7 +129,8 @@ export function createDuels({ db, game, now = Date.now, random = Math.random }) 
         hint: q.hint,
         choices: q.choices,
         expiresAt: r.served_at + D.answerWindowMs,
-        myCard: card(r.article_id),
+        // Your own card is the answer: only send what can't give it away.
+        myCard: (({ rarity, atk, def }) => ({ rarity, atk, def }))(card(r.article_id)),
         theirCard: card(oppRound.article_id),
       };
     });

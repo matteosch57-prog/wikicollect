@@ -164,7 +164,7 @@ export function createGame({ db, catalog, now = Date.now, random = Math.random }
         for (let attempt = 0; attempt < 3; attempt++) {
           article = type === 'theme'
             ? await catalog.drawFromSet(theme)
-            : await catalog.drawOfRarity(rollRarity(packType.slots[i] || packType.slots.at(-1), random));
+            : await catalog.drawOfRarity(rollRarity(packType.slots[i] || packType.slots.at(-1), random), seen);
           if (!seen.has(article.id)) break;
         }
         seen.add(article.id);

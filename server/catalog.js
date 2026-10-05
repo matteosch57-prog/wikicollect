@@ -41,8 +41,10 @@ export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.ra
     poolCount: db.prepare('SELECT COUNT(*) AS n FROM pool'),
     poolAdd: db.prepare('INSERT OR IGNORE INTO pool (article_id, rarity) VALUES (?, ?)'),
     poolTake: db.prepare(`DELETE FROM pool WHERE article_id = (
-      SELECT article_id FROM pool WHERE rarity = ? ORDER BY random() LIMIT 1) RETURNING article_id`),
-    anyOfRarity: db.prepare('SELECT * FROM articles WHERE rarity = ? ORDER BY random() LIMIT 1'),
+      SELECT article_id FROM pool WHERE rarity = ? AND article_id NOT IN (SELECT value FROM json_each(?))
+      ORDER BY random() LIMIT 1) RETURNING article_id`),
+    anyOfRarity: db.prepare(`SELECT * FROM articles WHERE rarity = ? AND id NOT IN (SELECT value FROM json_each(?))
+      ORDER BY random() LIMIT 1`),
     tierCounts: db.prepare('SELECT rarity, COUNT(*) AS n FROM articles GROUP BY rarity'),
     popularGet: db.prepare('SELECT titles FROM popular_cache WHERE month = ?'),
     popularPut: db.prepare('INSERT OR REPLACE INTO popular_cache (month, titles, fetched_at) VALUES (?, ?, ?)'),
@@ -143,18 +145,21 @@ export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.ra
 
   // --- dealing --------------------------------------------------------------
 
-  function takeFresh(rarity) {
-    const row = stmt.poolTake.get(rarity);
+  function takeFresh(rarity, exclude) {
+    const row = stmt.poolTake.get(rarity, exclude);
     return row ? stmt.get.get(row.article_id) : null;
   }
 
-  // Returns an article of exactly `rarity` when possible; walks down (then up)
-  // the tiers only if the catalog has nothing at all for that rarity.
-  async function drawOfRarity(rarity) {
-    let article = takeFresh(rarity) || stmt.anyOfRarity.get(rarity);
+  // Returns an article of exactly `rarity` when possible (never one of the
+  // `exclude` ids, i.e. cards already in this pack); walks down (then up) the
+  // tiers only if the catalog has nothing at all for that rarity.
+  async function drawOfRarity(rarity, excludeIds = []) {
+    const exclude = JSON.stringify([...excludeIds]);
+    const pick = (r) => takeFresh(r, exclude) || stmt.anyOfRarity.get(r, exclude);
+    let article = pick(rarity);
     if (!article && !wikiDown()) {
       await (RARITY_RANK[rarity] >= RARITY_RANK.SR ? enrich({ force: true }) : refillPool());
-      article = takeFresh(rarity) || stmt.anyOfRarity.get(rarity);
+      article = pick(rarity);
     }
     if (stmt.poolCount.get().n < config.pool.lowWater) refillPool();
     if (thinTiers().length) enrich();
@@ -165,7 +170,7 @@ export function createCatalog({ db, wiki, lang, now = Date.now, random = Math.ra
       .sort((a, b) => a.d - b.d)
       .slice(1);
     for (const { id } of order) {
-      const alt = takeFresh(id) || stmt.anyOfRarity.get(id);
+      const alt = pick(id);
       if (alt) {
         log.warn?.(`[catalog] no ${rarity} card available, dealt ${id} instead`);
         return alt;

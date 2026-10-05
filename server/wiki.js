@@ -16,10 +16,32 @@ export class WikiError extends Error {
   }
 }
 
-export function createWikiClient({ lang, userAgent, viewScale = 1, fetchImpl = fetch }) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function createWikiClient({ lang, userAgent, viewScale = 1, fetchImpl = fetch, spacingMs = 250, retryDelayMs = 2000 }) {
   const api = `https://${lang}.wikipedia.org/w/api.php`;
 
-  async function getJson(url) {
+  // Wikimedia etiquette: one request at a time, a little spacing, and a single
+  // polite retry when rate limited. Anything else bubbles up to the catalog's
+  // circuit breaker.
+  let queue = Promise.resolve();
+  function getJson(url) {
+    const run = queue.then(async () => {
+      try {
+        return await fetchJson(url);
+      } catch (err) {
+        if (err.status !== 429 || (err.retryAfterMs ?? 0) > 10_000) throw err;
+        await sleep(err.retryAfterMs ?? retryDelayMs);
+        return fetchJson(url);
+      } finally {
+        if (spacingMs) await sleep(spacingMs);
+      }
+    });
+    queue = run.catch(() => {});
+    return run;
+  }
+
+  async function fetchJson(url) {
     const res = await fetchImpl(url, {
       headers: { 'User-Agent': userAgent, 'Api-User-Agent': userAgent, Accept: 'application/json' },
       signal: AbortSignal.timeout(20000),

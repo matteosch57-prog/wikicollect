@@ -88,7 +88,9 @@ test('duels: decks, timed questions, ATK vs DEF scoring, rewards', async () => {
     const q = (await a.get(`/api/duels/${id}/question`)).data;
     assert.equal(q.slot, slot);
     assert.equal(q.choices.length, 4);
-    assert.equal(q.myCard.id, deckA[slot]);
+    assert.ok(q.choices.every((c) => deckA.includes(c.id)), 'choices come from your own deck');
+    assert.equal(q.myCard.id, undefined, 'the answer is never leaked');
+    assert.equal(q.myCard.title, undefined);
     if (slot === 2) {
       srv.clock.t += config.duel.answerWindowMs + 1;
       const late = await a.post(`/api/duels/${id}/answer`, { choice: deckA[slot] });

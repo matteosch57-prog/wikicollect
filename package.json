@@ -9,9 +9,10 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "WIKI_SOURCE=fixture DB_PATH=./data/dev.db node --disable-warning=ExperimentalWarning --watch server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.js'"
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js",
+    "demo": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.js --demo",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --watch server/index.js --demo",
+    "test": "node --disable-warning=ExperimentalWarning --test"
   },
   "dependencies": {
     "express": "^5.2.1"

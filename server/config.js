@@ -2,12 +2,14 @@
 
 const env = process.env;
 const lang = env.WIKI_LANG || 'en';
+// `--demo` (npm run demo / dev): offline bundled catalogue, separate database.
+const demo = process.argv.includes('--demo');
 
 export const config = {
   port: Number(env.PORT || 3000),
-  dbPath: env.DB_PATH || './data/wikicollect.db',
+  dbPath: env.DB_PATH || (demo ? './data/demo.db' : './data/wikicollect.db'),
   // "live" talks to Wikipedia, "fixture" uses the bundled offline catalog (dev/tests).
-  wikiSource: env.WIKI_SOURCE || 'live',
+  wikiSource: env.WIKI_SOURCE || (demo ? 'fixture' : 'live'),
   lang,
   // Big wikis need more daily views for the same rarity tier.
   viewScale: Number(env.RARITY_VIEW_SCALE || (lang === 'en' ? 3 : 1)),

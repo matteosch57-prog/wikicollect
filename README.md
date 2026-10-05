@@ -73,10 +73,13 @@ article is first discovered and then frozen:
 
 ```bash
 npm install
-npm start          # live Wikipedia on http://localhost:3000
-npm run dev        # offline demo catalogue, auto-reload
-npm test           # 42 tests: API, economy, social, Google sign-in, resilience, units
+npm run demo       # offline demo catalogue on http://localhost:3000
+npm start          # live Wikipedia (set WIKI_LANG=fr in .env for French)
+npm run dev        # demo catalogue + auto-reload
+npm test           # API, economy, social, Google sign-in, resilience, units
 ```
+
+Settings can go in a `.env` file (copy `.env.example`); works the same on Windows, macOS and Linux.
 
 | Env var | Default | |
 | --- | --- | --- |

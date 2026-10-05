@@ -1,0 +1,19 @@
+{
+  "name": "wikicollect",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Collect every Wikipedia article as a trading card: open packs, complete albums, trade duplicates, ace quizzes.",
+  "type": "module",
+  "main": "server/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "WIKI_SOURCE=fixture DB_PATH=./data/dev.db node --disable-warning=ExperimentalWarning --watch server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/**/*.test.js'"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

@@ -40,6 +40,11 @@ article is first discovered and then frozen:
   nothing "jumps"), anti-sniping, a listing fee and a 5% **sales tax that is
   burned**, a **48h relist cooldown** against flipping, and wishlist alerts. A
   wishlist entry clears itself when you obtain the card.
+- **Accounts**: email + password, or **Sign in with Google** (OpenID Connect
+  with PKCE, state and nonce). A Google login is never silently attached to an
+  existing password account with the same email; players link Google from
+  their account menu instead. New Google players still choose a username and
+  accept the rules.
 - **Social**: friends, direct messages, guilds with chat and a guild ranking,
   notifications, achievements, global, weekly, duel and quiz leaderboards.
 - **Moderation**: username/text filter (EN/FR, leetspeak-aware, no
@@ -70,7 +75,7 @@ article is first discovered and then frozen:
 npm install
 npm start          # live Wikipedia on http://localhost:3000
 npm run dev        # offline demo catalogue, auto-reload
-npm test           # 34 tests: API, economy, social, resilience, units
+npm test           # 42 tests: API, economy, social, Google sign-in, resilience, units
 ```
 
 | Env var | Default | |
@@ -82,12 +87,26 @@ npm test           # 34 tests: API, economy, social, resilience, units
 | `WIKI_SOURCE` | `live` | `fixture` = bundled offline catalogue |
 | `WIKI_USER_AGENT` | WikiCollect/0.2 (repo URL) | Wikimedia asks clients to identify themselves |
 | `ADMIN_USERNAMES` | — | comma-separated usernames with moderation rights |
+| `PUBLIC_URL` | — | public base URL, e.g. `https://wikicollect.example` (needed for Google sign-in) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | enables "Sign in with Google" (see below) |
 | `COOKIE_SECURE` | — | `1` behind HTTPS |
 | `PACK_REGEN_MS` | `600000` | free pack interval |
 
 Game balance (odds, prices, taxes, rewards) lives in `server/config.js` and
 `server/rarity.js`. If your host needs an outbound proxy, Node ≥ 22.21 honours
 `HTTPS_PROXY` when `NODE_USE_ENV_PROXY=1` is set.
+
+### Sign in with Google
+
+1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials),
+   configure the OAuth consent screen (scopes: `openid`, `email`, `profile`).
+2. Create credentials → **OAuth client ID** → *Web application*.
+3. Add the authorised redirect URI `<PUBLIC_URL>/auth/google/callback`,
+   e.g. `https://wikicollect.example/auth/google/callback` (and
+   `http://localhost:3000/auth/google/callback` for local testing).
+4. Start the server with `PUBLIC_URL`, `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET`. The Google button appears automatically; without
+   them, it stays hidden.
 
 ### Docker
 

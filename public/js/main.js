@@ -1,4 +1,4 @@
-import { state, api, post, setMe, onProfile, esc, fmt, icon, $, drawer, toast, timeAgo, fail } from './core.js';
+import { state, api, post, setMe, onProfile, esc, fmt, icon, $, drawer, toast, timeAgo, fail, GOOGLE_G } from './core.js';
 import { pageLanding } from './pages/landing.js';
 import { pagePulls } from './pages/pulls.js';
 import { pageAlbum } from './pages/album.js';
@@ -11,6 +11,7 @@ import { pageFriends, pageChat } from './pages/friends.js';
 import { pageRanking } from './pages/ranking.js';
 import { pageProfile, pageAchievements } from './pages/profile.js';
 import { pageAdmin } from './pages/admin.js';
+import { pageWelcome } from './pages/welcome.js';
 
 const view = $('#view');
 
@@ -85,6 +86,10 @@ function openMenu(e) {
     <a href="#/?shop=1">${icon('coin')} Shop</a>
     <a href="/api/export" download>${icon('download')} Export collection (JSON)</a>
     <a href="/api/export?format=csv" download>${icon('download')} Export collection (CSV)</a>
+    <hr>
+    ${state.config.googleAuth && !me.auth.google ? `<a href="/auth/google?link=1">${GOOGLE_G} Link Google account</a>` : ''}
+    <button data-password>${icon('key')} ${me.auth.password ? 'Change password' : 'Set a password'}</button>
+    ${me.auth.google && me.auth.password ? `<button data-unlink>${GOOGLE_G} Unlink Google</button>` : ''}
     ${me.isAdmin ? `<a href="#/admin">${icon('admin')} Moderation</a>` : ''}
     <hr>
     <button data-toggle-theme>${icon('moon')} ${document.documentElement.dataset.theme === 'dark' ? 'Light' : 'Dark'} reading room</button>
@@ -106,12 +111,51 @@ function openMenu(e) {
     } catch {}
     close();
   };
+  $('[data-password]', menu).onclick = () => {
+    close();
+    passwordDrawer();
+  };
+  $('[data-unlink]', menu)?.addEventListener('click', async () => {
+    close();
+    try {
+      await post('/account/google/unlink');
+      toast('Google account unlinked — sign in with your password from now on');
+      refreshMe();
+    } catch (err) {
+      fail(err);
+    }
+  });
   $('[data-logout]', menu).onclick = async () => {
     await post('/logout').catch(() => {});
     setMe(null);
     close();
     location.hash = '#/';
   };
+}
+
+function passwordDrawer() {
+  const has = state.me.auth.password;
+  const d = drawer(`
+    <div class="eyebrow">Account</div>
+    <h2 class="display" style="font-size:44px;margin:12px 0 10px">${has ? 'Change password' : 'Set a password'}</h2>
+    <p class="muted">${has ? 'Choose a new password of at least 8 characters.' : 'Add a password so you can also sign in without Google.'}</p>
+    <form class="stack" id="pw" style="margin-top:20px">
+      ${has ? '<div class="field"><label>Current password</label><input class="input" name="current" type="password" autocomplete="current-password" required></div>' : ''}
+      <div class="field"><label>New password</label><input class="input" name="password" type="password" autocomplete="new-password" minlength="8" required></div>
+      <div><button class="btn solid">Save</button></div>
+    </form>`);
+  $('#pw', d.el).addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      await post('/account/password', { current: f.get('current'), password: f.get('password') });
+      toast('Password saved');
+      d.close();
+      refreshMe();
+    } catch (err) {
+      fail(err);
+    }
+  });
 }
 
 const NOTIF = {
@@ -181,6 +225,7 @@ const ROUTES = [
   [/^\/admin$/, pageAdmin],
 ];
 const PUBLIC = [
+  [/^\/welcome$/, pageWelcome],
   [/^\/ranking$/, pageRanking],
   [/^\/u\/(.+)$/, pageProfile],
 ];
@@ -197,6 +242,10 @@ export async function route() {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   renderChrome();
   window.scrollTo({ top: 0 });
+  if (params.get('google') === 'linked' && state.me) {
+    toast('Google account linked — you can now sign in with it');
+    history.replaceState(null, '', '#/');
+  }
   const ctx = {
     view, params, refreshMe, route,
     onLeave: (fn) => { cleanup = fn; },

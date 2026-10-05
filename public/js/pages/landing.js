@@ -1,4 +1,4 @@
-import { post, $, $$, cardHtml, fail } from '../core.js';
+import { post, state, $, $$, cardHtml, fail, toast, GOOGLE_G } from '../core.js';
 
 const SAMPLE = [
   { id: 736, title: 'Albert Einstein', description: 'German-born theoretical physicist (1879–1955)', rarity: 'L', atk: 9430, def: 9150 },
@@ -44,6 +44,9 @@ export async function pageLanding({ view, params, refreshMe, route }) {
         <button class="${signup ? 'active' : ''}" data-mode="signup">Create an account</button>
         <button class="${signup ? '' : 'active'}" data-mode="login">Sign in</button>
       </div>
+      ${state.config.googleAuth ? `
+        <a class="btn google lg" href="/auth/google">${GOOGLE_G} ${signup ? 'Sign up' : 'Sign in'} with Google</a>
+        <div class="or"><span>or with email</span></div>` : ''}
       <form id="auth-form" novalidate>
         <div class="field"><label for="u">${signup ? 'Username' : 'Username or email'}</label>
           <input class="input" id="u" name="username" autocomplete="username" required maxlength="${signup ? 20 : 120}"></div>
@@ -81,4 +84,8 @@ export async function pageLanding({ view, params, refreshMe, route }) {
     });
   };
   renderAuth(startLogin ? 'login' : 'signup');
+  if (params.get('auth_error')) {
+    toast(params.get('auth_error'), 'error');
+    history.replaceState(null, '', '#/');
+  }
 }

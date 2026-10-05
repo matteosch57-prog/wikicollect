@@ -29,30 +29,63 @@ export function createAuth({ db, now = Date.now }) {
     return token;
   }
 
-  async function register({ username, email, password, adult, terms }) {
+  function checkNewAccount({ username, adult, terms }) {
     username = String(username || '').trim();
-    email = String(email || '').trim().toLowerCase();
-    password = String(password || '');
     if (!/^[A-Za-z0-9_\-.]{3,20}$/.test(username)) {
       throw new GameError('Username: 3–20 characters, letters, digits, _ - . only');
     }
     assertCleanUsername(username);
-    if (!/^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/.test(email)) throw new GameError('Please enter a valid email address');
-    if (password.length < 8) throw new GameError('Password must be at least 8 characters');
     if (!adult || !terms) throw new GameError('Please confirm you are 18+ and accept the rules');
     if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new GameError('Username is taken', 409);
-    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new GameError('An account already uses this email', 409);
-    const hash = await hashPassword(password);
+    return username;
+  }
+
+  function createUser({ username, email, passHash, googleSub = null }) {
     const isAdmin = config.admins.includes(username.toLowerCase()) ? 1 : 0;
     const { lastInsertRowid } = db.prepare(`
-      INSERT INTO users (username, email, pass_hash, created_at, packs, pack_clock, coins, is_admin) VALUES (?, ?, ?, ?, ?, ?, 0, ?)`)
-      .run(username, email, hash, now(), config.packs.starterPacks, now(), isAdmin);
+      INSERT INTO users (username, email, pass_hash, google_sub, created_at, packs, pack_clock, coins, is_admin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+      .run(username, email, passHash, googleSub, now(), config.packs.starterPacks, now(), isAdmin);
     return newSession(Number(lastInsertRowid));
+  }
+
+  async function register({ username, email, password, adult, terms }) {
+    username = checkNewAccount({ username, adult, terms });
+    email = String(email || '').trim().toLowerCase();
+    password = String(password || '');
+    if (!/^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/.test(email)) throw new GameError('Please enter a valid email address');
+    if (password.length < 8) throw new GameError('Password must be at least 8 characters');
+    if (db.prepare('SELECT 1 FROM users WHERE email = ?').get(email)) throw new GameError('An account already uses this email', 409);
+    return createUser({ username, email, passHash: await hashPassword(password) });
+  }
+
+  // Finishes a "Continue with Google" sign-up: the identity was verified in
+  // google.handleCallback, the player now picks a username.
+  function registerWithGoogle(google, { token, username, adult, terms }) {
+    username = checkNewAccount({ username, adult, terms });
+    const p = google.takePending(token);
+    if (db.prepare('SELECT 1 FROM users WHERE google_sub = ?').get(p.google_sub)) {
+      throw new GameError('This Google account already has a player — sign in with Google', 409);
+    }
+    const email = p.email && !db.prepare('SELECT 1 FROM users WHERE email = ?').get(p.email) ? p.email : null;
+    return createUser({ username, email, passHash: '', googleSub: p.google_sub });
+  }
+
+  // Sets a first password (Google-only accounts) or changes an existing one.
+  async function setPassword(userId, { current, password }) {
+    const u = db.prepare('SELECT pass_hash FROM users WHERE id = ?').get(userId);
+    if (u.pass_hash && !(await verifyPassword(String(current || ''), u.pass_hash))) {
+      throw new GameError('Your current password is not correct', 401);
+    }
+    if (String(password || '').length < 8) throw new GameError('Password must be at least 8 characters');
+    db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(await hashPassword(String(password)), userId);
+    return { ok: true };
   }
 
   async function login(identifier, password) {
     const id = String(identifier || '').trim();
     const u = db.prepare('SELECT id, pass_hash, banned_at, ban_reason FROM users WHERE username = ? OR email = ?').get(id, id.toLowerCase());
+    if (u && !u.pass_hash) throw new GameError('This account signs in with Google', 401);
     if (!u || !(await verifyPassword(String(password || ''), u.pass_hash))) {
       throw new GameError('Wrong username or password', 401);
     }
@@ -78,7 +111,7 @@ export function createAuth({ db, now = Date.now }) {
     return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MS / 1000}${secure}`;
   }
 
-  return { register, login, logout, userIdFor, cookieHeader };
+  return { register, registerWithGoogle, setPassword, login, logout, newSession, userIdFor, cookieHeader };
 }
 
 export function readCookie(req, name) {

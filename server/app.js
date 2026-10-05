@@ -13,6 +13,7 @@ import { createDuels } from './duels.js';
 import { createSocial } from './social.js';
 import { createModeration } from './moderation.js';
 import { createAuth, readCookie, COOKIE } from './auth.js';
+import { createGoogleAuth } from './google.js';
 import { GameError } from './errors.js';
 import { RARITIES } from './rarity.js';
 import { listNotifications, markRead, achievementsFor } from './notify.js';
@@ -68,6 +69,7 @@ export function createApp({
   random = Math.random,
   warm = true,
   log = console,
+  google: googleOpts = {},
 } = {}) {
   const db = openDb(dbPath);
   const wiki = createWikiClient({
@@ -87,6 +89,14 @@ export function createApp({
   const social = createSocial({ db, game, now });
   const mod = createModeration({ db, config, now });
   const auth = createAuth({ db, now });
+  const google = createGoogleAuth({
+    db,
+    now,
+    clientId: config.google.clientId,
+    clientSecret: config.google.clientSecret,
+    redirectUri: config.publicUrl ? `${config.publicUrl}/auth/google/callback` : '',
+    ...googleOpts,
+  });
 
   const app = express();
   app.set('trust proxy', 1);
@@ -117,6 +127,7 @@ export function createApp({
   app.get('/api/config', wrap(() => ({
     lang: config.lang,
     offline: wikiSource === 'fixture' && !fetchImpl,
+    googleAuth: google.enabled,
     rarities: RARITIES.map(({ id: rid, name, minViews, multiplier, recycle, points }) => ({
       id: rid, name, minViews: minViews * config.viewScale, multiplier, recycle, points,
     })),
@@ -151,6 +162,40 @@ export function createApp({
     return { ok: true };
   }));
   app.get('/api/me', wrap((req) => (req.userId ? game.profile(req.userId) : null)));
+
+  // --- Google sign-in -------------------------------------------------------
+  // Browser-facing redirects live outside /api; errors come back to the SPA
+  // as #/?auth_error=… so the player sees a readable message.
+  const backToApp = (res, hash) => res.setHeader('Cache-Control', 'no-store').redirect(303, `/#${hash}`);
+  app.get('/auth/google', authLimit, (req, res) => {
+    try {
+      const userId = auth.userIdFor(readCookie(req, COOKIE));
+      res.setHeader('Cache-Control', 'no-store');
+      res.redirect(303, google.authorizationUrl({ linkUserId: req.query.link === '1' && userId ? userId : null }));
+    } catch (err) {
+      backToApp(res, `/?auth_error=${encodeURIComponent(err.message)}`);
+    }
+  });
+  app.get('/auth/google/callback', authLimit, async (req, res) => {
+    try {
+      const result = await google.handleCallback(req.query);
+      if (result.pending) return backToApp(res, `/welcome?t=${encodeURIComponent(result.pending)}`);
+      if (result.linked) return backToApp(res, '/?google=linked');
+      res.setHeader('Set-Cookie', auth.cookieHeader(auth.newSession(result.userId), req));
+      backToApp(res, '/');
+    } catch (err) {
+      if (!(err instanceof GameError)) log.error?.(err);
+      backToApp(res, `/?auth_error=${encodeURIComponent(err instanceof GameError ? err.message : 'Google sign-in failed')}`);
+    }
+  });
+  app.get('/api/auth/google/pending', wrap((req) => google.pending(req.query.t)));
+  app.post('/api/register/google', authLimit, wrap((req, res) => {
+    const token = auth.registerWithGoogle(google, req.body);
+    res.setHeader('Set-Cookie', auth.cookieHeader(token, req));
+    return { ok: true };
+  }));
+  app.post('/api/account/password', requireUser, wrap((req) => auth.setPassword(req.userId, req.body)));
+  app.post('/api/account/google/unlink', requireUser, wrap((req) => google.unlink(req.userId)));
   app.get('/api/achievements', requireUser, wrap((req) => achievementsFor(db, req.userId)));
   app.get('/api/notifications', requireUser, wrap((req) => listNotifications(db, req.userId)));
   app.post('/api/notifications/read', requireUser, wrap((req) => {

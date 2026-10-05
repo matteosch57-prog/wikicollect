@@ -86,6 +86,7 @@ export function createGame({ db, catalog, now = Date.now, random = Math.random }
       id: u.id,
       username: u.username,
       isAdmin: !!u.is_admin || config.admins.includes(u.username.toLowerCase()),
+      auth: { google: !!u.google_sub, password: !!u.pass_hash },
       coins: u.coins,
       packs: u.packs,
       maxStock: P.maxStock,

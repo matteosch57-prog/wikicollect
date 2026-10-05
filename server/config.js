@@ -14,6 +14,9 @@ export const config = {
   // Wikimedia asks API clients to identify themselves with a contact.
   userAgent: env.WIKI_USER_AGENT || 'WikiCollect/0.2 (https://github.com/matteosch57-prog/wikicollect)',
   cookieSecure: env.COOKIE_SECURE === '1',
+  // Public base URL (e.g. https://wikicollect.example) — used for OAuth redirects.
+  publicUrl: (env.PUBLIC_URL || '').replace(/\/+$/, ''),
+  google: { clientId: env.GOOGLE_CLIENT_ID || '', clientSecret: env.GOOGLE_CLIENT_SECRET || '' },
   // Usernames (comma separated) that get moderator powers.
   admins: (env.ADMIN_USERNAMES || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
 

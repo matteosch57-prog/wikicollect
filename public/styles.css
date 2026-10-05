@@ -561,6 +561,12 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
   .pillars > div { border-right: 0 !important; padding-left: 0 !important; }
 }
 .auth { padding: 30px; }
+.btn.google { width: 100%; background: #fff; color: #1f1f1f; border-color: #c4c7c5; font-family: 'Geist', var(--sans); gap: 12px; }
+.btn.google:hover { background: #f6f8fc; color: #1f1f1f; border-color: #8e918f; }
+.g-logo { width: 18px; height: 18px; }
+.menu .g-logo { width: 16px; height: 16px; }
+.or { display: flex; align-items: center; gap: 12px; margin: 18px 0; font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--rule); }
 .auth form { display: grid; gap: 16px; }
 
 footer.colophon { border-top: 1px solid var(--rule); padding: 28px var(--gutter) 40px; font-size: 12.5px; color: var(--ink-3); display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; max-width: 1240px; margin: 0 auto; }

@@ -3,7 +3,32 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { GameError } from './errors.js';
 
-const SCHEMA_VERSION = 2;
+const BASE_VERSION = 2; // SCHEMA below; later changes are migrations
+const SCHEMA_VERSION = 3;
+
+// [version reached, SQL]. Applied in order to databases older than SCHEMA_VERSION.
+const MIGRATIONS = [
+  [3, `
+    ALTER TABLE users ADD COLUMN google_sub TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS users_google_sub ON users(google_sub);
+    -- In-flight OAuth logins (state -> PKCE verifier + nonce), kept 10 minutes.
+    CREATE TABLE IF NOT EXISTS oauth_states (
+      state TEXT PRIMARY KEY,
+      verifier TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      link_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+      created_at INTEGER NOT NULL
+    );
+    -- Verified Google identities waiting for the player to pick a username.
+    CREATE TABLE IF NOT EXISTS oauth_pending (
+      token TEXT PRIMARY KEY,
+      google_sub TEXT NOT NULL,
+      email TEXT,
+      name TEXT,
+      created_at INTEGER NOT NULL
+    );
+  `],
+];
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -298,14 +323,20 @@ export function openDb(path) {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   const version = db.prepare('PRAGMA user_version').get().user_version;
   const hasTables = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").get();
-  if (hasTables && version !== SCHEMA_VERSION) {
+  if (hasTables && (version < BASE_VERSION || version > SCHEMA_VERSION)) {
     throw new Error(
-      `Database ${path} uses schema v${version}, this build needs v${SCHEMA_VERSION}. ` +
-        'It was created by a pre-release build: delete it and restart.',
+      `Database ${path} uses schema v${version}, this build supports v${BASE_VERSION}–v${SCHEMA_VERSION}. ` +
+        (version < BASE_VERSION ? 'It was created by a pre-release build: delete it and restart.' : 'Upgrade the app.'),
     );
   }
   db.exec(SCHEMA);
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  let v = hasTables ? version : BASE_VERSION;
+  for (const [target, sql] of MIGRATIONS) {
+    if (v >= target) continue;
+    tx(db, () => db.exec(sql));
+    v = target;
+  }
+  db.exec(`PRAGMA user_version = ${v}`);
   return db;
 }
 
